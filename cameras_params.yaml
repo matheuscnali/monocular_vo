@@ -1,0 +1,29 @@
+cam_x: 
+  width  : 1241.0
+  height : 376.0
+  fx     : 718.8560
+  fy     : 718.8560
+  cx     : 607.1928
+  cy     : 185.2157
+  #distortion : (abs(k1) > 0.0000001)
+  #d : [k1, k2, p1, p2, k3]
+
+cam_y: 
+  width  : 1242.0
+  height : 375.0
+  fx     : 721.5377
+  fy     : 721.5377
+  cx     : 609.5593
+  cy     : 172.854
+  #distortion : (abs(k1) > 0.0000001)
+  #d : [k1, k2, p1, p2, k3]
+
+cam_z:
+  width  : 1226.0
+  height : 370.0
+  fx     : 707.0912
+  fy     : 707.0912
+  cx     : 601.8873
+  cy     : 183.1104
+  #distortion : (abs(k1) > 0.0000001)
+  #d : [k1, k2, p1, p2, k3]
