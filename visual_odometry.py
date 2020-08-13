@@ -107,17 +107,9 @@ class VisualOdometry:
                                         focal=self.cam_params['fx'],
                                         pp=self.pp)
 
-        #absolute_scale = self.get_absolute_scale(t.reshape(-1))
-        #print(f'Absolute Scale:      {absolute_scale} \nTrue Absolute Scale: {true_absolute_scale}\n')
+
         self.cur_t = self.cur_t + 0.7*self.cur_r.dot(t)
         self.cur_r = R.dot(self.cur_r)
-
-        #if frame_pose:
-        #    absolute_scale = self.get_absolute_scale(frame_pose)
-        #    if absolute_scale > 0.1:
-        #        self.cur_t = self.cur_t + absolute_scale * self.cur_r.dot(t)
-        #        self.cur_r = R.dot(self.cur_r)
-
         self.x_list.append(self.cur_t[0])
         self.y_list.append(self.cur_t[2])
 
