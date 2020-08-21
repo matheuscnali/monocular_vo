@@ -1,0 +1,29 @@
+fast:
+  detector_params:
+    name: fast
+    configuration:
+      threshold: 50
+      nonmaxSuppression: true
+  tracker_params:
+    name: optical_flow
+    configuration:
+      k_min_num_feature: 500
+      win_size:
+        - 21
+        - 21
+      max_level: 3
+
+sp:
+  detector_params:
+    name: sp
+    configuration:
+      weights_path: /home/az/Documents/TCC/VO/SuperPointVO/superpoint_v1.pth
+      nms_dist: 4
+      conf_thresh: 0.015
+      nn_thresh: 0.7
+      cuda: True
+  tracker_params:
+    name: nearest_neighbor
+    configuration:
+      nn_thresh: 0.7
+      max_length: 2

@@ -1,129 +1,132 @@
 import cv2
+import sys
 import numpy as np
-from sp_detector import PointTracker
-
-def sp_feature_tracking(frame, detector, tracker):
-
-    pts, desc, heatmap = detector.run(frame)
-
-    # Add points and descriptors to the tracker.
-    tracker.update(pts, desc)
-
-    # Get tracks for points which were match successfully across all frames.
-    tracks = tracker.get_tracks(min_length=1)
-
-    # Normalize track scores to [0,1].
-    tracks[:, 1] /= float(detector.nn_thresh)
-    kp1, kp2 = tracker.draw_tracks(tracks)
-
-    return kp1, kp2
-
-def fast_feature_tracking(image_ref, image_cur, px_ref):
-
-    lk_params = {'winSize': (21, 21),
-                 # 'maxLevel' : 3,
-                 'criteria': (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.01)}
-
-    kp2, st, err = cv2.calcOpticalFlowPyrLK(
-        image_ref, image_cur, px_ref, None, **lk_params)  # shape: [k,2] [k,1] [k,1]
-
-    st = st.reshape(st.shape[0])
-    kp1 = px_ref[st == 1]
-    kp2 = kp2[st == 1]
-
-    return kp1, kp2
-
-class VisualOdometry:
-
-    def __init__(self, name, cam_params, detector, tracker):
-        self.name       = name
-        self.cam_params = cam_params
-        self.last_frame = None
-        self.last_pose  = None
-        self.cur_r      = None
-        self.cur_t      = None
-        self.px_ref     = None
-        self.px_cur     = None
-        self.detector   = detector
-        self.tracker    = tracker
-        self.pp = (cam_params['cx'], cam_params['cy'])
-        self.x_list, self.y_list = [], []
-
-    def initialize(self, first_frame=None, second_frame=None):
-
-        if self.name == 'fast':
-            # Process first frame
-            self.px_ref = self.detector.detect(first_frame)
-            self.px_ref = np.array([x.pt for x in self.px_ref], dtype=np.float32)
-
-            # Process second frame
-            self.px_ref, self.px_cur = self.tracker(first_frame, second_frame, self.px_ref)
-
-        elif self.name == 'sp':
-            self.point_tracker = PointTracker(max_length=2, nn_thresh=self.detector.nn_thresh)
-            self.px_ref, self.px_cur = self.tracker(first_frame, self.detector, self.point_tracker)
-            self.px_ref, self.px_cur = self.tracker(second_frame, self.detector, self.point_tracker)
-
-        # Get the essential matrix
-        E, mask = cv2.findEssentialMat(self.px_cur, self.px_ref,
-                                       focal=self.cam_params['fx'],
-                                       pp=self.pp,
-                                       method=cv2.RANSAC,
-                                       prob=0.999,
-                                       threshold=1.0)
-
-        _, self.cur_r, self.cur_t, mask = cv2.recoverPose(E,
-                                                          self.px_cur,
-                                                          self.px_ref,
-                                                          focal=self.cam_params['fx'],
-                                                          pp=self.pp)
-        self.px_ref = self.px_cur
-        self.last_frame = second_frame
-        self.last_pose = self.cur_t.reshape(-1)
-
-    def process_frame(self, frame):
-
-        assert (frame.ndim == 2 and
-                frame.shape[0] == self.cam_params['height'] and
-                frame.shape[1] == self.cam_params['width']), "Frame: provided image has not the same size as the camera model or image is not grayscale"
-
-        k_min_num_feature = 500
-
-        if self.name == 'fast':
-            self.px_ref, self.px_cur = self.tracker(self.last_frame, frame, self.px_ref)
-        elif self.name == 'sp':
-            self.px_ref, self.px_cur = self.tracker(frame, self.detector, self.point_tracker)
-
-        E, mask = cv2.findEssentialMat(self.px_cur,
-                                       self.px_ref,
-                                       focal=self.cam_params['fx'],
-                                       pp=self.pp,
-                                       method=cv2.RANSAC,
-                                       prob=0.999,
-                                       threshold=1.0)
-
-        _, R, t, mask = cv2.recoverPose(E, self.px_cur,
-                                        self.px_ref,
-                                        focal=self.cam_params['fx'],
-                                        pp=self.pp)
+from sp_detector import SuperPointFrontend, PointTracker
 
 
-        self.cur_t = self.cur_t + 0.7*self.cur_r.dot(t)
-        self.cur_r = R.dot(self.cur_r)
-        self.x_list.append(self.cur_t[0])
-        self.y_list.append(self.cur_t[2])
+class Detector:
 
-        if self.name == "fast" and self.px_ref.shape[0] < k_min_num_feature:
-            self.px_cur = self.detector.detect(frame)
-            self.px_cur = np.array(
-                [x.pt for x in self.px_cur], dtype=np.float32)
+    def __init__(self, detector_params):
 
-        self.px_ref = self.px_cur
-        self.last_frame = frame
+        self.name = detector_params['name']
 
-    def get_absolute_scale(self, frame_pose):  # specialized for KITTI odometry dataset
+        if detector_params['name'] == 'sp':
+            self.detector = SuperPointFrontend(**detector_params['configuration'])
+        elif detector_params['name'] == 'fast':
+            self.detector = cv2.FastFeatureDetector_create(**detector_params['configuration'])
+        else:
+            print(f"Error, detector {detector_params['name']} is not defined")
+            sys.exit(1)
 
-        x_prev, y_prev, z_prev = self.last_pose
-        x, y, z = frame_pose
-        self.last_pose = frame_pose
-        return np.sqrt((x - x_prev) * (x - x_prev) + (y - y_prev) * (y - y_prev) + (z - z_prev) * (z - z_prev))
+    def run(self, frame):
+
+        if self.name == 'sp':
+            return self.detector.run(frame)
+
+        elif self.name == 'fast':
+            cur_features = self.detector.detect(frame)
+            return np.array([x.pt for x in cur_features], dtype=np.float32)
+
+class Tracker:
+
+    def __init__(self, tracker_params):
+
+        self.name = tracker_params['name']
+
+        if tracker_params['name'] == 'nearest_neighbor':
+            self.tracker = PointTracker(**tracker_params['configuration'])
+
+        elif tracker_params['name'] == 'optical_flow':
+            self.tracker = cv2.calcOpticalFlowPyrLK
+            self.k_min_num_feature = tracker_params['configuration']['k_min_num_feature']
+            self.prev_features = None
+            self.prev_frame = None
+            self.lk_params = {'winSize'  : tuple(tracker_params['configuration']['win_size']),
+                              'maxLevel' : tracker_params['configuration']['max_level'],
+                              'criteria' : (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.01)}
+
+        else:
+            print(f"Error, detector {tracker_params['name']} is not defined")
+            sys.exit(1)
+
+    def run(self, cur_frame, features):
+
+        if self.name == 'nearest_neighbor':
+            pts, desc, heatmap = features
+
+            # Add points and descriptors to the tracker.
+            self.tracker.update(pts, desc)
+
+            # Get tracks for points which were match successfully across all frames.
+            tracks = self.tracker.get_tracks(min_length=1)
+
+            # Normalize track scores to [0,1].
+            tracks[:, 1] /= float(self.tracker.nn_thresh)
+            prev_features, cur_features = self.tracker.draw_tracks(tracks)
+
+            return prev_features, cur_features
+
+        elif self.name == 'optical_flow':
+
+            cur_features, st, err = self.tracker(self.prev_frame, cur_frame, self.prev_features, None, **self.lk_params)
+
+            st = st.reshape(st.shape[0])
+
+            prev_features = self.prev_features[st == 1]
+            if prev_features.shape[0] < self.k_min_num_feature:
+                self.prev_features = features
+            else:
+                self.prev_features = cur_features
+
+            self.prev_frame = cur_frame
+
+            cur_features = cur_features[st == 1]
+
+            return prev_features, cur_features
+
+def validate_frame(frame, cam_params):
+
+    assert (frame.ndim == 2 and
+            frame.shape[0] == cam_params['height'] and
+            frame.shape[1] == cam_params['width']), "Frame: provided image has not the same size as the camera model or image is not grayscale"
+
+
+def get_scale(prev_pose, cur_pose):
+    """ The scale factor is computed from ground truth """
+
+    x_ref, y_ref, z_ref = prev_pose
+    x_cur, y_cur, z_cur = cur_pose
+    return np.sqrt((x_cur - x_ref) ** 2 + (y_cur - y_ref) ** 2 + (z_cur - z_ref) ** 2)
+
+def initialize_vo(image_loader, detector, tracker, vo_params):
+
+    first_frame = image_loader.get_frame()
+    validate_frame(first_frame, vo_params['cam_params'])
+    first_features = detector.run(first_frame)
+
+    if tracker.name == 'nearest_neighbor':
+        tracker.run(first_frame, first_features)
+    elif tracker.name == 'optical_flow':
+        tracker.prev_features = first_features
+        tracker.prev_frame = first_frame
+
+    second_frame = image_loader.get_frame()
+    validate_frame(second_frame, vo_params['cam_params'])
+    second_features = detector.run(second_frame)
+
+    tracked_cur_features, tracked_prev_features = tracker.run(second_frame, second_features)
+
+    E, mask = cv2.findEssentialMat(tracked_cur_features, tracked_prev_features,
+                                   focal=vo_params['cam_params']['fx'],
+                                   pp=vo_params['cam_centers'],
+                                   method=cv2.RANSAC,
+                                   prob=0.999,
+                                   threshold=1.0)
+
+    _, R, T, mask = cv2.recoverPose(E, tracked_cur_features, tracked_prev_features,
+                                    focal=vo_params['cam_params']['fx'],
+                                    pp=vo_params['cam_centers'])
+
+    T = T.reshape(-1)
+
+    return R, T

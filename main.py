@@ -4,11 +4,11 @@ import glob
 import sys
 import yaml
 import numpy as np
-import matplotlib.pyplot as plt
 
-import visual_odometry as vo
-from sp_detector import SuperPointFrontend
+from visualization import visualization_setup, update_visualization
+from visual_odometry import Detector, Tracker, initialize_vo, get_scale, validate_frame
 
+## KITTI dataset sequences
 # cam_x = 00, 01, 02
 # cam_y = 03
 # cam_z = 04, 05, 06, 07, 08, 09, 10
@@ -34,105 +34,24 @@ class ImageLoader:
             sys.exit(1)
 
     def __exit__(self):
+        print('yooooo!')
         self.source.release()
         cv2.destroyAllWindows()
 
-def update_visualization(frame, fast_vo, sp_vo, figure, ax, lines, true_x_list=None, true_y_list=None):
+def process_args(args):
 
-    # Features
-    fast_frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
-    for (u, v) in fast_vo.px_ref:
-        cv2.circle(fast_frame, (u, v), 3, (0, 200, 0))
-    cv2.putText(fast_frame, 'FAST', (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (190, 170, 10), 2, cv2.LINE_AA)
-
-    sp_frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
-    for (u, v) in sp_vo.px_ref:
-        cv2.circle(sp_frame, (u, v), 3, (0, 200, 0))
-    cv2.putText(sp_frame, 'SuperPoint', (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (190, 170, 10), 2, cv2.LINE_AA)
-
-    cv2.imshow("Features Detection", np.concatenate((fast_frame, sp_frame), axis=0))
-
-    # Trajectory
-    ## Update data (with the new and the old points)
-    if true_x_list is not None and true_y_list is not None:
-        lines['true'].set_xdata(true_x_list); lines['true'].set_ydata(true_y_list)
-
-    lines['fast'].set_xdata(fast_vo.x_list); lines['fast'].set_ydata(fast_vo.y_list)
-    lines['sp'].set_xdata(sp_vo.x_list); lines['sp'].set_ydata(sp_vo.y_list)
-
-    # Need both of these in order to rescale
-    ax.relim()
-    ax.autoscale_view()
-
-    # We need to draw *and* flush
-    figure.canvas.draw()
-    figure.canvas.flush_events()
-
-def trajectory_visualization_setup():
-
-    def on_pick(event):
-        # on the pick event, find the orig line corresponding to the
-        # legend proxy line, and toggle the visibility
-        leg_line_ = event.artist
-        orig_line_ = lined[leg_line_]
-        vis = not orig_line_.get_visible()
-        orig_line_.set_visible(vis)
-        # Change the alpha on the line in the legend so we can see what lines
-        # have been toggled
-        if vis:
-            leg_line_.set_alpha(1.0)
-        else:
-            leg_line_.set_alpha(0.2)
-        figure.canvas.draw()
-
-    # Iterative plot
-    plt.ion()
-
-    # Set up plot
-    figure, ax = plt.subplots()
-    ax.set(xlabel='x', ylabel='y', title='Visual Odometry Trajectory')
-    ax.legend('True Pose')
-
-    true_lines, = ax.plot([], [], 'o', color='blue', markersize=3, linestyle='--', label='Ground Truth')
-    fast_lines, = ax.plot([], [], 'o', color='purple', markersize=3, linestyle='--', label='FAST')
-    sp_lines, = ax.plot([], [], 'o', color='orange', markersize=3, linestyle='--', label='SuperPoint')
-
-    leg = ax.legend(loc='upper right', fancybox=True, shadow=True)
-    leg.get_frame().set_alpha(0.4)
-
-    # Auto scale on unknown axis
-    ax.set_autoscaley_on(True)
-
-    # Other stuff
-    ax.grid()
-
-    lines = {'true' : true_lines, 'fast' : fast_lines, 'sp' : sp_lines}
-
-    lined = dict()
-    for leg_line, orig_line in zip(leg.get_lines(), lines.values()):
-        leg_line.set_picker(10)
-        lined[leg_line] = orig_line
-    figure.canvas.mpl_connect('pick_event', on_pick)
-
-    cv2.namedWindow('Features Detection', cv2.WINDOW_NORMAL)
-
-    return figure, ax, lines
-
-def parse_process_args():
-
-    parser = argparse.ArgumentParser(description='Monocular Visual Odometry using Super Point')
-    parser.add_argument('--images_folder_path',  type=str, help='Path to folder with images',              default=None)
-    parser.add_argument('--camera_source',       type=int, help='Camera ID to get images',                 default=None)
-    parser.add_argument('--poses_file_path',     type=str, help='Path to file with ground truth/poses',    default=None)
-    parser.add_argument('--camera_id',           type=str, help='ID of the camera used to provide images', default=None)
-    parser.add_argument('--sp_weights_path',     type=str, help='Path to Superpoint weights file',         default=None)
-    parser.add_argument('--cameras_params_path', type=str, help='Path to file with cameras params',        default='cameras_params.yaml')
-    args = parser.parse_args()
+    # Get visual odometry parameters
+    vo_params = {'detector_name': args.detector_name}
 
     if args.cameras_params_path is not None:
         with open(args.cameras_params_path, 'r') as f:
-            cam_params = yaml.safe_load(f)[args.camera_id]
+            vo_params['cam_params'] = yaml.safe_load(f)[args.camera_id]
+            vo_params['cam_centers'] = (vo_params['cam_params']['cx'], vo_params['cam_params']['cy'])
 
+    with open(args.vo_configuration_path, 'r') as f:
+        vo_params.update(yaml.safe_load(f)[args.detector_name])
+
+    # Get ground truth poses
     if args.poses_file_path is not None:
         with open(args.poses_file_path, 'r') as f:
             # Maybe would be better change from float64 to float32
@@ -142,6 +61,7 @@ def parse_process_args():
     else:
         true_poses = None
 
+    # Get image loader (images from camera or folder)
     if args.images_folder_path is not None:
         image_generator = (cv2.imread(image_path, 0) for image_path in sorted(glob.glob(f'{args.images_folder_path}/*')))
         image_loader = ImageLoader('folder', image_generator)
@@ -152,95 +72,95 @@ def parse_process_args():
         print('Error, image source is not defined')
         sys.exit(1)
 
-    return image_loader, true_poses, cam_params, args.sp_weights_path
+    # Get detector and tracker
+    detector = Detector(vo_params['detector_params'])
+    tracker = Tracker(vo_params['tracker_params'])
+
+    return vo_params, true_poses, image_loader, detector, tracker
 
 def main():
 
-    image_loader, true_poses, cam_params, sp_weights_path = parse_process_args()
+    parser = argparse.ArgumentParser(description='Monocular Visual Odometry')
+    parser.add_argument('--images_folder_path',    type=str, help='Path to folder with images',              default=None)
+    parser.add_argument('--camera_source',         type=int, help='Camera ID to get images',                 default=None)
+    parser.add_argument('--poses_file_path',       type=str, help='Path to file with ground truth/poses',    default=None)
+    parser.add_argument('--camera_id',             type=str, help='ID of the camera used to provide images', default=None,                  required=True)
+    parser.add_argument('--cameras_params_path',   type=str, help='Path to file with cameras params',        default='cameras_params.yaml', required=True)
+    parser.add_argument('--vo_configuration_path', type=str, help='Path to file with vo params',             default='vo_params.yaml',      required=True)
+    parser.add_argument('--detector_name',         type=str, help='Detector name, sp or fast',                                              required=True)
+    vo_params, true_poses, image_loader, detector, tracker = process_args(parser.parse_args())
 
-    # Configuring Visual Odometry with FAST descriptor
-    fast_detector_kwargs = {
-        'threshold'         : 50,
-        'nonmaxSuppression' : True
-    }
+    cur_R, cur_T = initialize_vo(image_loader, detector, tracker, vo_params)
 
-    fast_vo_kwargs = {
-        'name'       : 'fast',
-        'cam_params' : cam_params,
-        'detector'   : cv2.FastFeatureDetector_create(**fast_detector_kwargs),
-        'tracker'    : vo.fast_feature_tracking
-    }
-
-    sp_vo_kwargs = {
-        'name'       : 'sp',
-        'cam_params' : cam_params,
-        'detector'   : SuperPointFrontend(weights_path=sp_weights_path,
-                                          nms_dist=4,
-                                          conf_thresh=0.015,
-                                          nn_thresh=0.7,
-                                          cuda=True),
-        'tracker'    : vo.sp_feature_tracking
-    }
-
-    fast_vo = vo.VisualOdometry(**fast_vo_kwargs)
-    sp_vo = vo.VisualOdometry(**sp_vo_kwargs)
-
-    first_frame  = image_loader.get_frame()
-    second_frame = image_loader.get_frame()
-    fast_vo.initialize(first_frame, second_frame)
-    sp_vo.initialize(first_frame, second_frame)
+    # Error and trajectory visualization variables
+    vo_errors = []
+    figure, ax, lines = visualization_setup(vo_params['detector_name'])
+    trajectory_data = {'detector_name': vo_params['detector_name'],
+                       'vo_x_list': [cur_T[0]],
+                       'vo_y_list': [cur_T[2]],
+                       'features': None}
 
     if true_poses is not None:
         true_poses_gen = (true_pose for true_pose in true_poses)
-        _ = next(true_poses_gen)
-        fast_vo.last_pose = next(true_poses_gen)
-
-    # Variables to store errors
-    fast_errors, sp_errors = [], []
-
-    # Trajectory visualization variables
-    figure, ax, lines = trajectory_visualization_setup()
-    true_x_list, true_y_list = [], []
+        prev_true_pose = next(true_poses_gen); cur_true_pose = next(true_poses_gen)
+        scale = get_scale(prev_true_pose, cur_true_pose)
+        cur_T = scale * cur_T
+        trajectory_data.update({'true_x_list': [], 'true_y_list': []})
 
     i = 0
-    # for true_pose in true_poses:
     while True:
 
-        # Frame processing
         frame = image_loader.get_frame()
+        validate_frame(frame, vo_params['cam_params'])
+
+        features = detector.run(frame)
+        tracked_prev_features, tracked_cur_features = tracker.run(frame, features)
+
+        E, mask = cv2.findEssentialMat(tracked_cur_features, tracked_prev_features,
+                                       focal=vo_params['cam_params']['fx'],
+                                       pp=vo_params['cam_centers'],
+                                       method=cv2.RANSAC,
+                                       prob=0.999,
+                                       threshold=1.0)
+
+        _, R, T, mask = cv2.recoverPose(E, tracked_cur_features, tracked_prev_features,
+                                        focal=vo_params['cam_params']['fx'],
+                                        pp=vo_params['cam_centers'])
+        T = T.reshape(-1)
+
         if true_poses is not None:
-            true_pose = next(true_poses_gen)
-            fast_vo.process_frame(frame, true_pose)
-            sp_vo.process_frame(frame, true_pose)
-            true_x_list.append(true_pose[0]); true_y_list.append(true_pose[2])
-            update_visualization(frame, fast_vo, sp_vo, figure, ax, lines, true_x_list, true_y_list)
+            cur_true_pose = next(true_poses_gen)
+            trajectory_data['true_x_list'].append(cur_true_pose[0]); trajectory_data['true_y_list'].append(cur_true_pose[2])
+
+            scale = get_scale(prev_true_pose, cur_true_pose)
+            if scale > 0.1:
+                cur_T = cur_T + scale * cur_R.dot(T)
+                cur_R = R.dot(cur_R)
 
             # Error calculation
-            fast_x, fast_y, fast_z = fast_vo.cur_t
-            sp_x, sp_y, sp_z = sp_vo.cur_t
-            true_x, true_y, true_z = true_pose
+            vo_x, vo_y, vo_z = cur_T
+            true_x, true_y, true_z = cur_true_pose
 
-            true_point = [true_x, true_z]
-            fast_est_point = [*fast_x, *fast_z]
-            sp_est_point = [*sp_x, *sp_z]
+            vo_error = np.linalg.norm(np.subtract([vo_x, vo_z], [true_x, true_z]))
+            vo_errors.append(vo_error)
 
-            fast_error = np.linalg.norm(np.subtract(fast_est_point, true_point))
-            sp_error = np.linalg.norm(np.subtract(sp_est_point, true_point))
+            avg_vo_error = np.mean(vo_errors)
 
-            fast_errors.append(fast_error)
-            sp_errors.append(sp_error)
-
-            avg_fast_error = np.mean(fast_errors)
-            avg_sp_error = np.mean(sp_errors)
+            prev_true_pose = cur_true_pose
 
             if i % 5 == 0:
-                print(f'Frame number: {i}')
-                print(f'FAST average error:        {avg_fast_error:.2f} \nSuperPoint average error:  {avg_sp_error:.2f} \n{"-"*40}')
+                print(f'frame number: {i}')
+                print(f'{vo_params["detector_name"]} average error:  {avg_vo_error:.2f} \n{"-"*40}')
             i += 1
+
         else:
-            fast_vo.process_frame(frame)
-            sp_vo.process_frame(frame)
-            update_visualization(frame, fast_vo, figure, ax, lines)
+            cur_T = cur_T + cur_R.dot(T)
+            cur_R = R.dot(cur_R)
+
+        trajectory_data['vo_x_list'].append(cur_T[0])
+        trajectory_data['vo_y_list'].append(cur_T[2])
+        trajectory_data['features'] = tracked_cur_features
+        update_visualization(frame, figure, ax, lines, trajectory_data)
 
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
