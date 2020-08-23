@@ -4,19 +4,16 @@ import glob
 import sys
 import yaml
 import numpy as np
+import datetime
+import pickle
 
 from visualization import visualization_setup, update_visualization
 from visual_odometry import Detector, Tracker, initialize_vo, get_scale, get_frame, validate_frame
 
-## KITTI dataset sequences
-# cam_x = 00, 01, 02
-# cam_y = 03
-# cam_z = 04, 05, 06, 07, 08, 09, 10
-
 def process_args(args):
 
     # Get visual odometry parameters
-    vo_params = {}
+    vo_params = {'origin_offset' : [float(p) for p in args.origin_offset]}
 
     if args.cameras_params_path is not None:
         with open(args.cameras_params_path, 'r') as f:
@@ -61,38 +58,43 @@ def process_args(args):
     detector = Detector(args.detector_name, vo_params['detector_params'])
     tracker = Tracker(args.tracker_name, vo_params['tracker_params'])
 
-    return vo_params, true_poses, image_source, detector, tracker
+    return vo_params, true_poses, image_source, detector, tracker, args.results_path
 
 def main():
 
     parser = argparse.ArgumentParser(description='Monocular Visual Odometry')
-    parser.add_argument('--dataset_name',        type=str, help='Dataset name (kitti or tum)',                  default=None)
-    parser.add_argument('--images_path',         type=str, help='Path to folder with images',                   default=None)
-    parser.add_argument('--poses_path',          type=str, help='Path to file with ground truth poses',         default=None)
-    parser.add_argument('--vo_config_path',      type=str, help='Path to yaml file with vo params',             default='vo_params.yaml')
-    parser.add_argument('--cameras_params_path', type=str, help='Path to yaml file with cameras params',        default='cameras_params.yaml')
-    parser.add_argument('--camera_source',       type=int, help='Camera source id to get images',               default=None)
-    parser.add_argument('--camera_id',           type=str, help='ID of the camera in cameras params yaml file', default=None, required=True)
-    parser.add_argument('--detector_name',       type=str, help='Detector name, sp or fast',                                  required=True)
-    parser.add_argument('--tracker_name',        type=str, help='Tracker name, optical flow or nearest neighbor',             required=True)
-    vo_params, true_poses, image_source, detector, tracker = process_args(parser.parse_args())
+    parser.add_argument('--dataset_name',        type=str, help='Dataset name (kitti or tum)',                    default=None)
+    parser.add_argument('--images_path',         type=str, help='Path to folder with images',                     default=None)
+    parser.add_argument('--poses_path',          type=str, help='Path to file with ground truth poses',           default=None)
+    parser.add_argument('--origin_offset',       type=str, help='Pose origin offset: x y z', nargs=3,             default=[0, 0, 0])
+    parser.add_argument('--vo_config_path',      type=str, help='Path to yaml file with vo params',               default='vo_params.yaml')
+    parser.add_argument('--cameras_params_path', type=str, help='Path to yaml file with cameras params',          default='cameras_params.yaml')
+    parser.add_argument('--camera_source',       type=int, help='Camera source id to get images',                 default=None)
+    parser.add_argument('--camera_id',           type=str, help='ID of the camera in cameras params yaml file',       required=True)
+    parser.add_argument('--detector_name',       type=str, help='Detector name, "sp" or "fast"',                      required=True)
+    parser.add_argument('--tracker_name',        type=str, help='Tracker name, "optical_flow" or "nearest_neighbor"', required=True)
+    parser.add_argument('--results_path',        type=str, help='Path to folder to save visual odometry results', default='results')
+    vo_params, true_poses, image_source, detector, tracker, results_path = process_args(parser.parse_args())
 
     cur_R, cur_T = initialize_vo(image_source, detector, tracker, vo_params)
 
     # Error and trajectory visualization variables
     vo_errors = []
     figure, ax, lines = visualization_setup(detector.name)
-    trajectory_data = {'detector_name': detector.name,
-                       'vo_x_list': [cur_T[0]],
-                       'vo_y_list': [cur_T[2]],
-                       'features': None}
 
+    trajectory_data = {}
     if true_poses is not None:
         true_poses_gen = (true_pose for true_pose in true_poses)
         prev_true_pose = next(true_poses_gen); cur_true_pose = next(true_poses_gen)
         scale = get_scale(prev_true_pose, cur_true_pose)
         cur_T = scale * cur_T
-        trajectory_data.update({'true_x_list': [], 'true_y_list': []})
+        trajectory_data.update({'true_x_list': [], 'true_z_list': []})
+
+    cur_T += vo_params['origin_offset']
+    trajectory_data.update({'detector_name': detector.name,
+                            'vo_x_list': [cur_T[0]],
+                            'vo_z_list': [cur_T[2]],
+                            'features': None})
 
     i = 0
     while True:
@@ -117,12 +119,12 @@ def main():
 
         if true_poses is not None:
             cur_true_pose = next(true_poses_gen)
-            trajectory_data['true_x_list'].append(cur_true_pose[0]); trajectory_data['true_y_list'].append(cur_true_pose[2])
+            trajectory_data['true_x_list'].append(cur_true_pose[0]); trajectory_data['true_z_list'].append(cur_true_pose[2])
 
             scale = get_scale(prev_true_pose, cur_true_pose)
-            #if scale > 0.1:
-            cur_T = cur_T + scale * cur_R.dot(T)
-            cur_R = R.dot(cur_R)
+            if scale > 0.1:
+                cur_T = cur_T + scale * cur_R.dot(T)
+                cur_R = R.dot(cur_R)
 
             # Error calculation
             vo_x, vo_y, vo_z = cur_T
@@ -130,7 +132,6 @@ def main():
 
             vo_error = np.linalg.norm(np.subtract([vo_x, vo_z], [true_x, true_z]))
             vo_errors.append(vo_error)
-
             avg_vo_error = np.mean(vo_errors)
 
             prev_true_pose = cur_true_pose
@@ -144,7 +145,7 @@ def main():
             cur_R = R.dot(cur_R)
 
         trajectory_data['vo_x_list'].append(cur_T[0])
-        trajectory_data['vo_y_list'].append(cur_T[2])
+        trajectory_data['vo_z_list'].append(cur_T[2])
         trajectory_data['features'] = tracked_cur_features
         update_visualization(frame, figure, ax, lines, trajectory_data)
         i += 1
@@ -157,6 +158,11 @@ def main():
         image_source.release()
 
     cv2.destroyAllWindows()
+
+    # Saving trajectory data
+    cur_time = datetime.datetime.today().strftime('%h-%d %H:%M')
+    with open(f'{results_path}/trajectory_data/{cur_time}.pickle', 'wb') as f:
+        pickle.dump(trajectory_data, f)
 
 if __name__ == '__main__':
     main()

@@ -13,10 +13,10 @@ def update_visualization(frame, figure, ax, lines, trajectory_data):
 
     # Trajectory
     ## Update data (with the new and the old points)
-    if 'true_x_list' in trajectory_data and 'true_y_list' in trajectory_data:
-        lines['true'].set_xdata(trajectory_data['true_x_list']); lines['true'].set_ydata(trajectory_data['true_y_list'])
+    if 'true_x_list' in trajectory_data and 'true_z_list' in trajectory_data:
+        lines['true'].set_xdata(trajectory_data['true_x_list']); lines['true'].set_ydata(trajectory_data['true_z_list'])
 
-    lines['vo'].set_xdata(trajectory_data['vo_x_list']); lines['vo'].set_ydata(trajectory_data['vo_y_list'])
+    lines['vo'].set_xdata(trajectory_data['vo_x_list']); lines['vo'].set_ydata(trajectory_data['vo_z_list'])
 
     # Need both of these in order to rescale
     ax.relim()
@@ -48,7 +48,7 @@ def visualization_setup(vo_name):
 
     # Set up plot
     figure, ax = plt.subplots()
-    ax.set(xlabel='x', ylabel='y', title='Visual Odometry Trajectory')
+    ax.set(xlabel='x', ylabel='z', title='Visual Odometry Trajectory')
     ax.legend('True Pose')
 
     true_lines, = ax.plot([], [], 'o', color='blue', markersize=3, linestyle='--', label='ground truth')
