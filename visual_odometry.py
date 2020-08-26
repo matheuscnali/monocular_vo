@@ -18,14 +18,15 @@ class Detector:
             print(f"Error, detector {detector_name} is not defined")
             sys.exit(1)
 
-    def run(self, frame):
+    def run(self, frame) -> dict:
 
         if self.name == 'sp':
-            return self.detector.run(frame)
+            pts, desc, heatmap = self.detector.run(frame)
+            return {'detector': self.name, 'pts': pts, 'desc': desc, 'heatmap': heatmap}
 
         elif self.name == 'fast':
             cur_features = self.detector.detect(frame)
-            return np.array([x.pt for x in cur_features], dtype=np.float32)
+            return {'detector': self.name, 'pts': np.array([x.pt for x in cur_features], dtype=np.float32)}
 
 class Tracker:
 
@@ -49,18 +50,30 @@ class Tracker:
             print(f"Error, detector {tracker_name} is not defined")
             sys.exit(1)
 
+    def adapt_features(self, features):
+
+        if self.name == 'optical_flow':
+            if features['detector'] == 'sp':
+                features['pts'] = np.array([[x, y] for x, y in zip(features['pts'][0], features['pts'][1])], dtype=np.float32)
+                return features
+            else:
+                return features
+        else:
+            return features
+
     def run(self, cur_frame, features):
 
+        features = self.adapt_features(features)
+
         if self.name == 'nearest_neighbor':
-            pts, desc, heatmap = features
 
             # Add points and descriptors to the tracker.
-            self.tracker.update(pts, desc)
+            self.tracker.update(features['pts'], features['desc'])
 
             # Get tracks for points which were match successfully across all frames.
             tracks = self.tracker.get_tracks(min_length=1)
 
-            # Normalize track scores to [0,1].
+            # Normalize track scores to [0, 1].
             tracks[:, 1] /= float(self.tracker.nn_thresh)
             prev_features, cur_features = self.tracker.draw_tracks(tracks)
 
@@ -74,7 +87,7 @@ class Tracker:
 
             prev_features = self.prev_features[st == 1]
             if prev_features.shape[0] < self.k_min_num_feature:
-                self.prev_features = features
+                self.prev_features = features['pts']
             else:
                 self.prev_features = cur_features
 
@@ -116,11 +129,12 @@ def initialize_vo(image_source, detector, tracker, vo_params):
     first_frame = get_frame(image_source)
     validate_frame(first_frame, vo_params['cam_params'])
     first_features = detector.run(first_frame)
+    first_features = tracker.adapt_features(first_features)
 
     if tracker.name == 'nearest_neighbor':
         tracker.run(first_frame, first_features)
     elif tracker.name == 'optical_flow':
-        tracker.prev_features = first_features
+        tracker.prev_features = first_features['pts']
         tracker.prev_frame = first_frame
 
     second_frame = get_frame(image_source)
