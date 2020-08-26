@@ -55,11 +55,8 @@ class Tracker:
         if self.name == 'optical_flow':
             if features['detector'] == 'sp':
                 features['pts'] = np.array([[x, y] for x, y in zip(features['pts'][0], features['pts'][1])], dtype=np.float32)
-                return features
-            else:
-                return features
-        else:
-            return features
+
+        return features
 
     def run(self, cur_frame, features):
 
