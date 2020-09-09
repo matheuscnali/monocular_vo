@@ -1,0 +1,5 @@
+t_motion: 0.8  # The outlier removal threshold probability for iterative BG motion approximation
+epsilon: 0.1   # Minimum error between iterations to stop iterative BG approximation process
+h: 480         # Camera image height
+w: 640         # Camera image width
+resize_scale: 0.3
