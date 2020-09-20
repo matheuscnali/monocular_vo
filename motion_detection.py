@@ -8,11 +8,17 @@ import numpy as np
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 
+sys.path.append('core')
+from PIL import Image
+import torch
+from raft import RAFT
+from utils.utils import InputPadder
 
 def visualize_motion_segmentation(outlier_mask, img):
 
-    outlier_mask = outlier_mask.reshape(img.shape)
-    img_motion_segmentation = cv2.cvtColor(img_2, cv2.COLOR_GRAY2BGR)
+    outlier_mask = outlier_mask.reshape(img.shape[0:2])
+    #img_motion_segmentation = cv2.cvtColor(img_2, cv2.COLOR_GRAY2BGR)
+    img_motion_segmentation = img
     overlay = img_motion_segmentation.copy()
 
     for y, row in enumerate(outlier_mask):
@@ -22,46 +28,54 @@ def visualize_motion_segmentation(outlier_mask, img):
 
     # Add transparency to red circles
     alpha = 0.3
-    img_motion_segmentation = cv2.addWeighted(overlay, alpha, img_motion_segmentation, 1 - alpha, 0)
+    img_motion_segmentation = cv2.addWeighted(overlay, alpha, img_2, 1 - alpha, 0)
     resize_dim = (int(img_motion_segmentation.shape[1] * 3), int(img_motion_segmentation.shape[0] * 3))
     img_motion_segmentation = cv2.resize(img_motion_segmentation, resize_dim, interpolation=cv2.INTER_AREA)
     cv2.imshow("Motion segmentation", img_motion_segmentation)
 
-def visualize_optical_flow(optical_flow, cap, optical_flow_kwargs):
+def visualize_optical_flow(cap, model):
 
     # Two visualizations mode, optical flow direction and optical flow magnitude.
     mode, pause = False, False
     while True:
 
         if not pause:
-            _, img_1 = cap.read(); img_1 = cv2.cvtColor(img_1, cv2.COLOR_BGR2GRAY)
-            _, img_2 = cap.read(); img_2 = cv2.cvtColor(img_2, cv2.COLOR_BGR2GRAY)
+            _, img_1 = cap.read()
+            _, img_2 = cap.read()
 
             dim = (int(img_1.shape[1] * 0.3), int(img_1.shape[0] * 0.3))
 
             img_1 = cv2.resize(img_1, dim, interpolation=cv2.INTER_AREA)
             img_2 = cv2.resize(img_2, dim, interpolation=cv2.INTER_AREA)
+            h, w = img_2.shape[0], img_2.shape[1]
 
-            if optical_flow == 'farnelback':
-                flow = cv2.calcOpticalFlowFarneback(img_1, img_2, None, 0.5, 3, 15, 3, 5, 1.2, 0)
-                v_x = flow[:, :, 0].flatten()
-                v_y = flow[:, :, 1].flatten()
-            elif optical_flow == 'ce liu':
-                (u, v, warped) = bob.ip.optflow.liu.sor.flow(img_1, img_2, **optical_flow_kwargs)
-                v_x = u.flatten()
-                v_y = v.flatten()
-                flow = [[x, y] for x, y in zip(v_x, v_y)]
-                flow = np.array(flow).reshape(img_1.shape[0], img_1.shape[1], 2)
+            img1 = np.array(img_1).astype(np.uint8)
+            img1 = torch.from_numpy(img1).permute(2, 0, 1).float()
+            img2 = np.array(img_2).astype(np.uint8)
+            img2 = torch.from_numpy(img2).permute(2, 0, 1).float()
+
+            images = torch.stack([img1, img2], dim=0)
+            images = images.to('cuda')
+
+            padder = InputPadder(images.shape)
+            images = padder.pad(images)[0]
+            img1 = images[0, None]
+            img2 = images[1, None]
+
+            flow_low, flow_up = model(img1, img2, iters=20, test_mode=True)
+            v_x = flow_up[0][0].cpu().data.numpy().flatten()
+            v_y = flow_up[0][1].cpu().data.numpy().flatten()
+            flow = np.array([flow_up.cpu().data.numpy()[0][1].T, flow_up.cpu().data.numpy()[0][0].T]).T
 
             if mode:
                 img_with_flow = draw_flow(img_2, flow)
                 img_with_flow = cv2.resize(img_with_flow, (dim[0] * 3, dim[1] * 3), interpolation=cv2.INTER_AREA)
-                cv2.imshow(f"{optical_flow} optical flow", img_with_flow)
+                cv2.imshow("Optical flow", img_with_flow)
             else:
                 v_mag = np.sqrt(np.add(np.power(v_x, 2), np.power(v_y, 2)))
-                v_mag = v_mag.reshape(img_2.shape)
+                v_mag = v_mag.reshape(h, w)
                 v_mag = cv2.resize(v_mag, (dim[0] * 3, dim[1] * 3), interpolation=cv2.INTER_AREA)
-                cv2.imshow(f"{optical_flow} optical flow", v_mag)
+                cv2.imshow("Optical flow", v_mag)
         else:
             time.sleep(0.1)
 
@@ -72,7 +86,6 @@ def visualize_optical_flow(optical_flow, cap, optical_flow_kwargs):
         elif k == ord('p'):
             pause = not pause
         elif k == ord('q'):
-            cap.release()
             cv2.destroyAllWindows()
             break
 
@@ -83,7 +96,10 @@ def draw_flow(img, flow, step=8, color=(0, 255, 0)):
     fx, fy = flow[y, x].T
     lines = np.vstack([x, y, x + fx, y + fy]).T.reshape(-1, 2, 2)
     lines = np.int32(lines + 0.5)
-    vis = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+    if len(img.shape) == 2:
+        vis = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+    elif len(img.shape) == 3:
+        vis = img
     cv2.polylines(vis, lines, 0, color)
     for (x1, y1), (x2, y2) in lines:
         cv2.circle(vis, (x1, y1), 1, color, -1)
@@ -94,15 +110,29 @@ def activation_function(x):
     fg_probability = 2 / (1 + np.exp(-2 * (x))) - 1
     return fg_probability
 
-def get_motion_vector(img_1, img_2, optical_flow_kwargs):
+def get_motion_vector(optical_flow_model, img_1, img_2):
 
-    #flow = cv2.calcOpticalFlowFarneback(img_1, img_2, None, 0.5, 3, 5, 3, 5, 1.2, 0)
-    #v_x = flow[:, :, 0].flatten()
-    #v_y = flow[:, :, 1].flatten()
+    img_1 = np.array(img_1).astype(np.uint8); img_1 = torch.from_numpy(img_1).permute(2, 0, 1).float()
+    img_2 = np.array(img_2).astype(np.uint8); img_2 = torch.from_numpy(img_2).permute(2, 0, 1).float()
 
-    (u, v, warped) = bob.ip.optflow.liu.sor.flow(img_1, img_2, **optical_flow_kwargs)
-    v_x = u.flatten()
-    v_y = v.flatten()
+    images = torch.stack([img_1, img_2], dim=0)
+    images = images.to('cuda')
+
+    padder = InputPadder(images.shape)
+    images = padder.pad(images)[0]
+    img_1 = images[0, None]
+    img_2 = images[1, None]
+
+    flow_low, flow_up = optical_flow_model(img_1, img_2, iters=20, test_mode=True)
+    flow_up = flow_up[0].permute(1, 2, 0).cpu().detach().numpy()
+    v_x = flow_up[:, :, 0]
+    v_y = flow_up[:, :, 1]
+
+    rad = np.sqrt(np.square(v_x) + np.square(v_y))
+    rad_max = np.max(rad)
+    epsilon = 1e-5
+    v_x = v_x / (rad_max + epsilon)
+    v_y = v_y / (rad_max + epsilon)
 
     v_mag = np.sqrt(np.add(np.power(v_x, 2), np.power(v_y, 2)))
     v_ang = np.degrees(np.arctan(np.divide(v_y, v_x)))
@@ -124,50 +154,44 @@ def initialize(args):
     with open(args.config_path, 'r') as f:
         config = yaml.safe_load(f.read())
 
-    #cap = cv2.VideoCapture('/media/az/420a7b37-c2b0-476d-b5a9-36622869cdb0/image_dataset/hopkins/Hopkins155WithVideosPart8/cars9/cars9.avi')
-    cap = cv2.VideoCapture(0)
-    #cap = cv2.VideoCapture('/media/az/420a7b37-c2b0-476d-b5a9-36622869cdb0/image_dataset/kitti/sequences/20/project.avi')
+    cap = cv2.VideoCapture(args.image_path)
 
     # Define dynamic model
-    w, h = int(config['w'] * config['resize_scale']) , int(config['h'] * config['resize_scale'])
+    w, h = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) * config['resize_scale']), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) * config['resize_scale'])
     config['dim'] = (w, h)
+
     Y, X = np.mgrid[0: h: 1, 0: w: 1].reshape(2, -1).astype(int)
     dynamic_model = np.array([X ** 2, Y ** 2, X * Y, X, Y, X * 0 + 1]).T
 
     fps = []
 
-    optical_flow_kwargs = {
-        'alpha': 1,
-        'ratio': 0.5,
-        'min_width': 7,
-        'n_outer_fp_iterations': 6,
-        'n_inner_fp_iterations': 2,
-        'n_sor_iterations': 20
-    }
+    # RAFT
+    DEVICE = 'cuda'
 
-    # Check optical flow working
-    visualize_optical_flow('ce liu', cap, optical_flow_kwargs)
+    optical_flow_model = torch.nn.DataParallel(RAFT(args))
+    optical_flow_model.load_state_dict(torch.load(args.model))
 
-    return fps, cap, config, X, Y, dynamic_model, optical_flow_kwargs
+    model = optical_flow_model.module
+    model.to(DEVICE)
+    model.eval()
 
-def motion_from_optical_flow(img_1, img_2, optical_flow_kwargs):
+    return fps, cap, config, X, Y, dynamic_model, optical_flow_model
 
-    # Get motion vector from optical flow and project data into the principal component
-    actual_motion = get_motion_vector(img_1, img_2, optical_flow_kwargs)
-    actual_motion = get_pca_projections(actual_motion)
+def motion_from_optical_flow(motion_vector, dynamic_model, config):
 
-    actual_motion_, dynamic_model_ = actual_motion, dynamic_model
+    motion_vector_, dynamic_model_ = motion_vector, dynamic_model
     epsilon, prev_residual = config['epsilon'] + 1e-6, 0
+
     while epsilon > config['epsilon']:
         # Fit a dynamic model to actual motion
-        coefficients, r, rank, s = np.linalg.lstsq(a=dynamic_model_, b=actual_motion_, rcond=None)
+        coefficients, r, rank, s = np.linalg.lstsq(a=dynamic_model_, b=motion_vector_, rcond=None)
         epsilon = abs(r - prev_residual)
         prev_residual = r
 
         # Compute estimated motion, pixel wise motion error and foreground probability
         a, b, c, d, e, f = coefficients
         estimated_motion = np.array(a * X ** 2 + b * Y ** 2 + c * X * Y + d * X + e * Y + f).T
-        pixel_wise_motion_error = np.abs(np.subtract(actual_motion, estimated_motion))
+        pixel_wise_motion_error = np.abs(np.subtract(motion_vector, estimated_motion))
         fg_probability = activation_function(pixel_wise_motion_error)
 
         # Select outlier pixels
@@ -176,7 +200,7 @@ def motion_from_optical_flow(img_1, img_2, optical_flow_kwargs):
 
         # Update models
         dynamic_model_ = dynamic_model[outliers_index]
-        actual_motion_ = actual_motion[outliers_index]
+        motion_vector_ = motion_vector[outliers_index]
 
     return outlier_mask
 
@@ -185,19 +209,29 @@ if __name__ == '__main__':
     # Load configurations
     parser = argparse.ArgumentParser(description='Motion detector')
     parser.add_argument('--config_path', type=str, help='Path to configuration file', default='configuration/motion_detection_params.yaml')
+
+    # RAFT args
+    parser.add_argument('--model', default='models/raft-things.pth', help="restore checkpoint")
+    parser.add_argument('--image_path', help="dataset for evaluation")
+    parser.add_argument('--small', action='store_true', help='use small model')
+    parser.add_argument('--mixed_precision', action='store_true', help='use mixed precision')
+    parser.add_argument('--alternate_corr', action='store_true', help='use efficient correlation implementation')
     args = parser.parse_args()
 
-    fps, cap, config, X, Y, dynamic_model, optical_flow_kwargs = initialize(args)
+    fps, cap, config, X, Y, dynamic_model, optical_flow_model = initialize(args)
 
     while True:
 
         start = time.time()
 
-        _, img_1 = cap.read(); img_1 = cv2.cvtColor(img_1, cv2.COLOR_BGR2GRAY); img_1 = cv2.resize(img_1, config['dim'], interpolation=cv2.INTER_AREA)
-        _, img_2 = cap.read(); img_2 = cv2.cvtColor(img_2, cv2.COLOR_BGR2GRAY); img_2 = cv2.resize(img_2, config['dim'], interpolation=cv2.INTER_AREA)
+        _, img_1 = cap.read(); img_1 = cv2.resize(img_1, config['dim'], interpolation=cv2.INTER_AREA)
+        _, img_2 = cap.read(); img_2 = cv2.resize(img_2, config['dim'], interpolation=cv2.INTER_AREA)
 
         # Run optical flow motion segmentation
-        outlier_mask = motion_from_optical_flow
+        # Get motion vector from optical flow and project data into the principal component
+        motion_vector = get_motion_vector(optical_flow_model, img_1, img_2)
+        motion_vector = get_pca_projections(motion_vector)
+        outlier_mask = motion_from_optical_flow(motion_vector[2], dynamic_model, config)
 
         # Visualize motion segmentation
         visualize_motion_segmentation(outlier_mask, img_2)
@@ -210,11 +244,6 @@ if __name__ == '__main__':
         if cv2.waitKey(1) == ord('q'):
             cv2.destroyAllWindows()
             sys.exit(0)
-
-
-
-
-
 
 """optical_flow_kwargs = {
     'alpha':  np.random.randint(1, 5),
