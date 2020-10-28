@@ -1,15 +1,15 @@
 import cv2
+import numpy as np
+import torch
 import matplotlib.pyplot as plt
+import time
 
-def update_visualization(frame, figure, ax, lines, trajectory_data):
+
+def update_visualization(frame, figure, ax, lines, trajectory_data, mask):
 
     # Features
-    vo_frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
     for (u, v) in trajectory_data['features']:
-        cv2.circle(vo_frame, (u, v), 3, (0, 200, 0))
-    cv2.putText(vo_frame, trajectory_data['detector_name'], (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (190, 170, 10), 2, cv2.LINE_AA)
-
-    cv2.imshow("Features Detection", vo_frame)
+        cv2.circle(frame, (u, v), 3, (0, 200, 0))
 
     # Trajectory
     ## Update data (with the new and the old points)
@@ -18,15 +18,35 @@ def update_visualization(frame, figure, ax, lines, trajectory_data):
 
     lines['vo'].set_xdata(trajectory_data['vo_x_list']); lines['vo'].set_ydata(trajectory_data['vo_z_list'])
 
+    lines['error_x'].set_xdata(trajectory_data['step']); lines['error_x'].set_ydata(trajectory_data['error_x'])
+    lines['error_y'].set_xdata(trajectory_data['step']); lines['error_y'].set_ydata(trajectory_data['error_y'])
+    lines['error_z'].set_xdata(trajectory_data['step']); lines['error_z'].set_ydata(trajectory_data['error_z'])
+
     # Need both of these in order to rescale
-    ax.relim()
-    ax.autoscale_view()
+    ax[0].relim()
+    ax[1].relim()
+    ax[0].autoscale_view()
+    ax[1].autoscale_view()
 
     # We need to draw and flush
     figure.canvas.draw()
     figure.canvas.flush_events()
 
-def visualization_setup(vo_name):
+    # Draw motion detection
+    img_motion_segmentation = frame
+    overlay = img_motion_segmentation.copy()
+
+    for y, row in enumerate(mask):
+        for x, is_outlier in enumerate(row):
+            if is_outlier:
+                cv2.circle(overlay, (x, y), 1, (0, 0, 255), -1)
+
+    # Add transparency to red circles
+    alpha = 0.3
+    img_motion_segmentation = cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0)
+    cv2.imshow("Motion segmentation", img_motion_segmentation)
+
+def visualization_setup():
 
     def on_pick(event):
         # on the pick event, find the orig line corresponding to the
@@ -47,44 +67,51 @@ def visualization_setup(vo_name):
     plt.ion()
 
     # Set up plot
-    figure, ax = plt.subplots()
-    ax.set(xlabel='x', ylabel='z', title='Visual Odometry Trajectory')
-    ax.legend('True Pose')
+    figure, ax = plt.subplots(1, 2)
 
-    true_lines, = ax.plot([], [], 'o', color='blue', markersize=3, linestyle='--', label='ground truth')
-    vo_lines, = ax.plot([], [], 'o', color='orange', markersize=3, linestyle='--', label=vo_name)
+    ax[0].set(xlabel='x', ylabel='z', title='Visual Odometry Trajectory')
+    ax[1].set(xlabel='Frame', ylabel='Error', title='Visual Odometry Trajectory Error')
 
-    leg = ax.legend(loc='upper right', fancybox=True, shadow=True)
-    leg.get_frame().set_alpha(0.4)
+    true_lines, = ax[0].plot([], [], 'o', color='blue', markersize=3, linestyle='--', label='Ground Truth')
+    vo_lines, = ax[0].plot([], [], 'o', color='orange', markersize=3, linestyle='--', label='Super Glue')
+    error_lines_X, = ax[1].plot([], [], 'o', color='green', markersize=3, linestyle='--', label='Error X')
+    error_lines_Y, = ax[1].plot([], [], 'o', color='red', markersize=3, linestyle='--', label='Error Y')
+    error_lines_Z, = ax[1].plot([], [], 'o', color='blue', markersize=3, linestyle='--', label='Error Z')
+
+    trajectory_leg = ax[0].legend(loc='upper right', fancybox=True, shadow=True)
+    trajectory_leg.get_frame().set_alpha(0.4)
+    error_leg = ax[1].legend(loc='upper right', fancybox=True, shadow=True)
+    error_leg.get_frame().set_alpha(0.4)
 
     # Auto scale on unknown axis
-    ax.set_autoscaley_on(True)
+    ax[0].set_autoscaley_on(True)
+    ax[1].set_autoscaley_on(True)
 
     # Other stuff
-    ax.grid()
-    lines = {'true' : true_lines, 'vo' : vo_lines}
+    ax[0].grid()
+    ax[1].grid()
+
+    lines = {'true': true_lines, 'vo': vo_lines, 'error_x': error_lines_X, 'error_y': error_lines_Y, 'error_z': error_lines_Z}
 
     lined = dict()
-    for leg_line, orig_line in zip(leg.get_lines(), lines.values()):
-        leg_line.set_picker(10)
+    for leg_line, orig_line in zip([*trajectory_leg.get_lines(), *error_leg.get_lines()], lines.values()):
+        leg_line.set_pickradius(10)
         lined[leg_line] = orig_line
     figure.canvas.mpl_connect('pick_event', on_pick)
 
-    cv2.namedWindow('Features Detection', cv2.WINDOW_NORMAL)
-
     return figure, ax, lines
 
-def visualize_optical_flow(cap, model):
+def visualize_optical_flow(model):
 
     # Two visualizations mode, optical flow direction and optical flow magnitude.
-    mode, pause = False, False
+    mode, pause = True, False
     while True:
 
         if not pause:
-            _, img_1 = cap.read()
-            _, img_2 = cap.read()
+            img_1 = cv2.imread('/home/az/Documents/TCC/vo/test/000032.png')
+            img_2 = cv2.imread('/home/az/Documents/TCC/vo/test/000033.png')
 
-            dim = (int(img_1.shape[1] * 0.3), int(img_1.shape[0] * 0.3))
+            dim = (int(img_1.shape[1] * 0.4), int(img_1.shape[0] * 0.4))
 
             img_1 = cv2.resize(img_1, dim, interpolation=cv2.INTER_AREA)
             img_2 = cv2.resize(img_2, dim, interpolation=cv2.INTER_AREA)
@@ -145,21 +172,3 @@ def draw_flow(img, flow, step=8, color=(0, 255, 0)):
     for (x1, y1), (x2, y2) in lines:
         cv2.circle(vis, (x1, y1), 1, color, -1)
     return vis
-
-def visualize_motion_segmentation(outlier_mask, config, img):
-
-    outlier_mask = outlier_mask.reshape(config['height'], config['width'])
-    img_motion_segmentation = img
-    overlay = img_motion_segmentation.copy()
-
-    for y, row in enumerate(outlier_mask):
-        for x, is_outlier in enumerate(row):
-            if is_outlier:
-                cv2.circle(overlay, (x, y), 1, (0, 0, 255), -1)
-
-    # Add transparency to red circles
-    alpha = 0.3
-    img_motion_segmentation = cv2.addWeighted(overlay, alpha, img, 1 - alpha, 0)
-    resize_dim = (int(img_motion_segmentation.shape[1] * 3), int(img_motion_segmentation.shape[0] * 3))
-    img_motion_segmentation = cv2.resize(img_motion_segmentation, resize_dim, interpolation=cv2.INTER_AREA)
-    cv2.imshow("Motion segmentation", img_motion_segmentation)

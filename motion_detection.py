@@ -1,61 +1,27 @@
-import argparse
 import cv2
-import time
 import sys
-import yaml
 import numpy as np
+import time
+import torch
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 from sklearn.cluster import DBSCAN
 from sklearn.mixture import GaussianMixture
-import matplotlib.pyplot as plt
-
-sys.path.append('core')
-import torch
-from raft import RAFT
 from utils.utils import InputPadder
 
-from visualization import visualize_motion_segmentation
-
-DEVICE = 'cuda'
-
-def initialize(args):
-
-    with open(args.config_path, 'r') as f:
-        config = yaml.safe_load(f.read())
-
-    cap = cv2.VideoCapture(args.image_path)
-
-    # Define dynamic model
-    config['height'], config['width'] = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) * config['resize_scale']), int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) * config['resize_scale'])
-
-    Y, X = np.mgrid[0: config['height']: 1, 0: config['width']: 1].reshape(2, -1).astype(int)
-    dynamic_model = np.array([X ** 2, Y ** 2, X * Y, X, Y, X * 0 + 1]).T
-
-    fps = []
-
-    # RAFT
-    optical_flow_model = torch.nn.DataParallel(RAFT(args))
-    optical_flow_model.load_state_dict(torch.load(args.model))
-
-    model = optical_flow_model.module
-    model.to(DEVICE)
-    model.eval()
-
-    return fps, cap, config, X, Y, dynamic_model, optical_flow_model
 
 def activation_function(x):
 
     fg_probability = 2 / (1 + np.exp(-2 * (x))) - 1
     return fg_probability
 
-def get_motion_vector(optical_flow_model, img_1, img_2):
+def get_motion_vector(optical_flow_model, img_1, img_2, config):
 
     img_1 = np.array(img_1).astype(np.uint8); img_1 = torch.from_numpy(img_1).permute(2, 0, 1).float()
     img_2 = np.array(img_2).astype(np.uint8); img_2 = torch.from_numpy(img_2).permute(2, 0, 1).float()
 
     images = torch.stack([img_1, img_2], dim=0)
-    images = images.to(DEVICE)
+    images = images.to(config['device'])
 
     padder = InputPadder(images.shape)
     images = padder.pad(images)[0]
@@ -86,8 +52,6 @@ def get_pca_projections(data):
 
     pca = PCA(n_components=1)
     pca.fit(data)
-    if debug:
-        print(f'PCA variance ratio: {pca.explained_variance_ratio_}')
     transformed_data = pca.transform(data)
 
     return transformed_data.flatten()
@@ -102,8 +66,7 @@ def get_mega_pixel(img, config):
         'image_width': img.shape[1],
         'image_channels': img.shape[2]
     }
-    #seeds = cv2.ximgproc.createSuperpixelLSC(img)
-    #seeds.iterate(num_iterations)
+
     seeds = cv2.ximgproc.createSuperpixelSEEDS(**superpixel_params)
     seeds.iterate(img, num_iterations)
 
@@ -210,44 +173,42 @@ def get_sp_neighboors(seeds):
     return neighbors
 
 def motion_from_appearance(pm, img, config):
+    x, y = np.indices((img.shape[0], img.shape[1]))
+    features = np.array([[*img[i - 1][j - 1], *img[i - 1][j], *img[i][j + 1],
+                          *img[i][j - 1],     *img[i][j],     *img[i][j + 1],
+                          *img[i + 1][j - 1], *img[i + 1][j], *img[i + 1][j + 1]] for i, j in zip(x.flatten(), y.flatten()) if
+                          (i != 0) and (i != img.shape[0] - 1) and (j != 0) and (j != img.shape[1] - 1)])
 
-    feature_vector, fg_features, bg_features = [], [], []
-    for i, row in enumerate(img):
-        for j, p in enumerate(row):
+    x, y = np.where(pm > config['p_h'])
+    fg_features = np.array([[*img[i - 1][j - 1], *img[i - 1][j], *img[i][j + 1], *img[i][j - 1], *img[i][j], *img[i][j + 1], *img[i + 1][j - 1], *img[i + 1][j], *img[i + 1][j + 1]] for i, j in zip(x, y) if (i != 0) and (i != img.shape[0] - 1) and (j != 0) and (j != img.shape[1] - 1)])
 
-            if i == 0 or i == img.shape[0] - 1:
-                break
-            if j == 0 or j == img.shape[1] - 1:
-                continue
-            else:
-                r1 = img_2[i - 1][j - 1:j + 2]
-                r2 = img_2[i    ][j - 1:j + 2]
-                r3 = img_2[i + 1][j - 1:j + 2]
-                feature_vector.append(np.concatenate((r1, r2, r3), axis=0).flatten())
+    x, y = np.where(pm < config['p_l'])
+    bg_features = np.array([[*img[i - 1][j - 1], *img[i - 1][j], *img[i][j + 1], *img[i][j - 1], *img[i][j], *img[i][j + 1], *img[i + 1][j - 1], *img[i + 1][j], *img[i + 1][j + 1]] for i, j in zip(x, y) if (i != 0) and (i != img.shape[0] - 1) and (j != 0) and (j != img.shape[1] - 1)])
 
-                if pm[i][j] > config['p_h']:
-                    fg_features.append(np.concatenate((r1, r2, r3), axis=0).flatten())
-
-                if pm[i][j] < config['p_l']:
-                    bg_features.append(np.concatenate((r1, r2, r3), axis=0).flatten())
+    if len(fg_features) < 20 or len(bg_features) < 20:
+        return pm
 
     fg_gmm = GaussianMixture(n_components=7, tol=config['C']).fit(fg_features)
     bg_gmm = GaussianMixture(n_components=9, tol=config['C']).fit(bg_features)
 
-    l_fg = np.divide(fg_gmm.score_samples(feature_vector), 9)
-    l_bg = np.divide(bg_gmm.score_samples(feature_vector), 9)
+    l_fg = np.divide(fg_gmm.score_samples(features), 9)
+    l_bg = np.divide(bg_gmm.score_samples(features), 9)
     llr = np.divide(l_fg, l_bg)
 
     pa = 2 / (1 + np.exp(-2 * llr)) - 1
 
-    return pa
+    pa_t = pm.copy()
+    pa_t[1:-1, 1:-1] = pa.reshape(img.shape[0] - 2, img.shape[1] - 2)
+
+    return pa_t
 
 def motion_from_optical_flow(motion_vector, dynamic_model, config):
 
     motion_vector_, dynamic_model_ = motion_vector, dynamic_model
-    epsilon, prev_residual = config['epsilon'] + 1e-6, 0
+    epsilon, prev_residual = config['motion_detection']['epsilon'] + 1e-6, 0
+    x, y = config['x'], config['y']
 
-    while epsilon > config['epsilon']:
+    while epsilon > config['motion_detection']['epsilon']:
         # Fit a dynamic model to actual motion
         coefficients, r, rank, s = np.linalg.lstsq(a=dynamic_model_, b=motion_vector_, rcond=None)
         epsilon = abs(r - prev_residual)
@@ -255,19 +216,31 @@ def motion_from_optical_flow(motion_vector, dynamic_model, config):
 
         # Compute estimated motion, pixel wise motion error and foreground probability
         a, b, c, d, e, f = coefficients
-        estimated_motion = np.array(a * X ** 2 + b * Y ** 2 + c * X * Y + d * X + e * Y + f).T
+        estimated_motion = np.array(a * x ** 2 + b * y ** 2 + c * x * y + d * x + e * y + f).T
         pixel_wise_motion_error = np.abs(np.subtract(motion_vector, estimated_motion))
         fg_probability = activation_function(pixel_wise_motion_error)
 
         # Select outlier pixels
-        outlier_mask = fg_probability < config['t_motion']
+        outlier_mask = fg_probability < config['motion_detection']['t_motion']
         outliers_index = np.where(outlier_mask == True)
 
         # Update models
         dynamic_model_ = dynamic_model[outliers_index]
         motion_vector_ = motion_vector[outliers_index]
 
-    return fg_probability.reshape(img_1.shape[:2])
+    return fg_probability.reshape(config['height'], config['width'])
+
+def motion_probability(img_1, img_2, optical_flow_model, dynamic_model, config):
+
+    # Get motion vector
+    motion_vector = get_motion_vector(optical_flow_model, img_1, img_2, config)
+    motion_vector = get_pca_projections(motion_vector)
+
+    # Run motion module
+    pm = motion_from_optical_flow(motion_vector, dynamic_model, config)
+    fg_mask = pm < config['motion_detection']['t_motion']
+
+    return fg_mask
 
 if __name__ == '__main__':
 
@@ -276,7 +249,7 @@ if __name__ == '__main__':
     parser.add_argument('--config_path', type=str, help='Path to configuration file', default='configuration/motion_detection_params.yaml')
 
     # RAFT args
-    parser.add_argument('--model', default='models/raft-things.pth', help="restore checkpoint")
+    parser.add_argument('--model', default='models/raft/raft-things.pth', help="restore checkpoint")
     parser.add_argument('--image_path', help="dataset for evaluation")
     parser.add_argument('--small', action='store_true', help='use small model')
     parser.add_argument('--mixed_precision', action='store_true', help='use mixed precision')
@@ -287,6 +260,7 @@ if __name__ == '__main__':
     debug = args.debug
     fps, cap, config, X, Y, dynamic_model, optical_flow_model = initialize(args)
 
+    #visualize_optical_flow(optical_flow_model)
     while True:
 
         start = time.time()
@@ -301,21 +275,19 @@ if __name__ == '__main__':
         # Run motion module
         pm = motion_from_optical_flow(motion_vector, dynamic_model, config)
 
-        # Run apperance module
-        # pa = motion_from_appearance(pm, img_1, config)
-        # pa_t = pm.copy()
-        # pa_t[1:-1, 1:-1] = pa.reshape(img_2.shape[0] - 2, img_2.shape[1] - 2)
-
-        # Combine with megapixel
-        # megapixel = get_mega_pixel(img_2, config)
-        # for megapixel_id in range(len(megapixel)):
-        #     mp_coordinates = np.where(megapixel == megapixel_id)
+        # Run appearance module
+        # pa = motion_from_appearance(pm, img_2, config)
         #
-        #     pm_avg = np.mean(pm[mp_coordinates])
-        #     pm[mp_coordinates] = pm_avg
-
-            # pa_t_avg = np.mean(pa_t[mp_coordinates])
-            # pa_t[mp_coordinates] = pa_t_avg
+        # Combine with megapixel
+        #megapixel = get_mega_pixel(img_1, config)
+        #for megapixel_id in range(len(megapixel)):
+        #    mp_coordinates = np.where(megapixel == megapixel_id)
+        #
+        #    pm_avg = np.mean(pm[mp_coordinates])
+        #    pm[mp_coordinates] = pm_avg
+        #
+        #     pa_avg = np.mean(pa[mp_coordinates])
+        #     pa[mp_coordinates] = pa_avg
 
         # Visualize motion segmentation
         fg_mask = pm < config['t_motion']

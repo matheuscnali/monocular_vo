@@ -1,0 +1,70 @@
+## KITTI dataset sequences
+# cam_kitti_a = 00, 01, 02, 13, 14, 15, 16, 17, 18, 19, 20, 21
+# cam_kitti_b = 03
+# cam_kitti_c = 04, 05, 06, 07, 08, 09, 10, 11, 12
+
+cameras:
+  cam_kitti_a:
+    width  : 1241.0
+    height : 376.0
+    fx     : 718.8560
+    fy     : 718.8560
+    cx     : 607.1928
+    cy     : 185.2157
+
+  cam_kitti_b:
+    width  : 1242.0
+    height : 375.0
+    fx     : 721.5377
+    fy     : 721.5377
+    cx     : 609.5593
+    cy     : 172.854
+
+  cam_kitti_c:
+    width  : 1226.0
+    height : 370.0
+    fx     : 707.0912
+    fy     : 707.0912
+    cx     : 601.8873
+    cy     : 183.1104
+
+  cam_tum:
+    width  : 640.0
+    height : 480.0
+    fx     : 525.0
+    fy     : 525.0
+    cx     : 319.5
+    cy     : 239.5
+
+  cam_laptop:
+    width  : 640.0
+    height : 480.0
+    fx     : 933.2397
+    fy     : 933.7152
+    cx     : 668.296
+    cy     : 352.727
+    d      : [-0.00655, -0.13106, 0.00207, -0.003801, 0.26269]
+
+visual_odometry:
+  origin_offset: 0 0 0
+  super_glue:
+    weights: /home/az/Documents/TCC/vo/models/super_glue/weights/superglue_outdoor.pth
+    sinkhorn_iterations: 20
+    match_threshold: 0.2
+
+  super_point:
+    nms_radius: 4
+    keypoint_threshold: 0.005
+    max_keypoints: -1
+
+motion_detection:
+  t_motion: 0.9      # The outlier removal threshold probability for iterative BG motion approximation
+  epsilon: 0.1       # Minimum error between iterations to stop iterative BG approximation process
+  resize_scale: 1
+  t_color: 3
+  R: 300
+  p_h: 0.9
+  p_l: 0.5
+  C: 0.01
+
+device: cuda

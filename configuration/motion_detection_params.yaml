@@ -1,8 +1,0 @@
-t_motion: 0.7  # The outlier removal threshold probability for iterative BG motion approximation
-epsilon: 0.1   # Minimum error between iterations to stop iterative BG approximation process
-resize_scale: 0.5
-t_color: 3
-R: 300
-p_h: 0.9
-p_l: 0.5
-C: 0.01
