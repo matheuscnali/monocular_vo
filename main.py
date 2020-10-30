@@ -73,8 +73,10 @@ def main():
     parser.add_argument('--optical_flow_model',            help="restore checkpoint",                             default='models/raft/raft-things.pth',)
     parser.add_argument('--small',                         help='use small model for optical flow',               action='store_true',)
     parser.add_argument('--mixed_precision',               help='use mixed precision',                            action='store_true',)
-    parser.add_argument('--alternate_corr',                help='use efficient correlation implementation',       action='store_true',)
+    parser.add_argument('--alternate_corr',                help='use efficient correlation implementation',       action='store_false',)
     parser.add_argument('--debug',                         help='Activate / deactivate debug',                    default=True)
+
+
     args = parser.parse_args()
 
     true_poses, image_getter, config, optical_flow_model = initialize(args)
@@ -111,20 +113,24 @@ def main():
         matches = current['matches0'][0].cpu().numpy()
         confidence = current['matching_scores0'][0].cpu().numpy()
         valid_matches = matches > -1
-        valid_confidence = confidence > 0.95
+        valid_confidence = confidence > 0.8
         valid = np.logical_and(valid_matches, valid_confidence)
         mkpts0 = kpts0[valid]
         mkpts1 = kpts1[matches[valid]]
 
-        fg_probability = motion_probability(reference['frame0'], current['frame1'], optical_flow_model, dynamic_model, config)
+        bg_mask = motion_probability(reference['frame0'], current['frame1'], optical_flow_model, dynamic_model, config)
 
-        static_pixels_index = [i for i, p in enumerate(mkpts0) if fg_probability[int(p[1])][int(p[0])]]
+        static_pixels_index = [i for i, p in enumerate(mkpts0) if bg_mask[int(p[1])][int(p[0])]]
+        dynamic_pixels_index = [i for i, p in enumerate(mkpts0) if not bg_mask[int(p[1])][int(p[0])]]
+        dynamic_mkpts0 = mkpts0[dynamic_pixels_index]
         mkpts0 = mkpts0[static_pixels_index]
         mkpts1 = mkpts1[static_pixels_index]
 
         E, mask = cv2.findEssentialMat(mkpts1, mkpts0, focal=config['cam_params']['fx'], pp=config['cam_centers'], method=cv2.RANSAC, prob=0.999, threshold=0.5)
         _, R, T, mask = cv2.recoverPose(E, mkpts1, mkpts0, focal=config['cam_params']['fx'], pp=config['cam_centers'])
         T = T.reshape(-1)
+        trajectory_data['static_features'] = mkpts0
+        trajectory_data['dynamic_features'] = dynamic_mkpts0
 
         if true_poses is not None:
             cur_true_pose = next(true_poses_gen)
@@ -152,13 +158,12 @@ def main():
 
         trajectory_data['vo_x_list'].append(vo_x)
         trajectory_data['vo_z_list'].append(vo_z)
-        update_visualization(reference['frame0'], figure, ax, lines, trajectory_data, fg_probability)
+        update_visualization(reference['frame0'], figure, ax, lines, trajectory_data, mask, i)
         i += 1
 
         reference = {k + '0': current[k + '1'] for k in keys}
         reference['image0'] = frame_tensor
         reference['frame0'] = frame
-        trajectory_data['features'] = mkpts1
 
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
@@ -166,7 +171,7 @@ def main():
     cv2.waitKey(0)
     if isinstance(image_getter, cv2.VideoCapture):
         image_getter.release()
-
+    matplotlib.pyplot.savefig('results/trajectory.png')
     cv2.destroyAllWindows()
 
 if __name__ == '__main__':

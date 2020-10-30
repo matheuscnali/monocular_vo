@@ -173,6 +173,7 @@ def get_sp_neighboors(seeds):
     return neighbors
 
 def motion_from_appearance(pm, img, config):
+
     x, y = np.indices((img.shape[0], img.shape[1]))
     features = np.array([[*img[i - 1][j - 1], *img[i - 1][j], *img[i][j + 1],
                           *img[i][j - 1],     *img[i][j],     *img[i][j + 1],
@@ -222,7 +223,7 @@ def motion_from_optical_flow(motion_vector, dynamic_model, config):
 
         # Select outlier pixels
         outlier_mask = fg_probability < config['motion_detection']['t_motion']
-        outliers_index = np.where(outlier_mask == True)
+        outliers_index = np.where(outlier_mask is True)
 
         # Update models
         dynamic_model_ = dynamic_model[outliers_index]
@@ -238,67 +239,6 @@ def motion_probability(img_1, img_2, optical_flow_model, dynamic_model, config):
 
     # Run motion module
     pm = motion_from_optical_flow(motion_vector, dynamic_model, config)
-    fg_mask = pm < config['motion_detection']['t_motion']
+    bg_mask = pm < config['motion_detection']['t_motion']
 
-    return fg_mask
-
-if __name__ == '__main__':
-
-    # Load configurations
-    parser = argparse.ArgumentParser(description='Motion detector')
-    parser.add_argument('--config_path', type=str, help='Path to configuration file', default='configuration/motion_detection_params.yaml')
-
-    # RAFT args
-    parser.add_argument('--model', default='models/raft/raft-things.pth', help="restore checkpoint")
-    parser.add_argument('--image_path', help="dataset for evaluation")
-    parser.add_argument('--small', action='store_true', help='use small model')
-    parser.add_argument('--mixed_precision', action='store_true', help='use mixed precision')
-    parser.add_argument('--alternate_corr', action='store_true', help='use efficient correlation implementation')
-    parser.add_argument('--debug', default=True, help='Activate / deactivate debug')
-    args = parser.parse_args()
-
-    debug = args.debug
-    fps, cap, config, X, Y, dynamic_model, optical_flow_model = initialize(args)
-
-    #visualize_optical_flow(optical_flow_model)
-    while True:
-
-        start = time.time()
-
-        _, img_1 = cap.read(); img_1 = cv2.resize(img_1, (config['width'], config['height']), interpolation=cv2.INTER_AREA)
-        _, img_2 = cap.read(); img_2 = cv2.resize(img_2, (config['width'], config['height']), interpolation=cv2.INTER_AREA)
-
-        # Get motion vector
-        motion_vector = get_motion_vector(optical_flow_model, img_1, img_2)
-        motion_vector = get_pca_projections(motion_vector)
-
-        # Run motion module
-        pm = motion_from_optical_flow(motion_vector, dynamic_model, config)
-
-        # Run appearance module
-        # pa = motion_from_appearance(pm, img_2, config)
-        #
-        # Combine with megapixel
-        #megapixel = get_mega_pixel(img_1, config)
-        #for megapixel_id in range(len(megapixel)):
-        #    mp_coordinates = np.where(megapixel == megapixel_id)
-        #
-        #    pm_avg = np.mean(pm[mp_coordinates])
-        #    pm[mp_coordinates] = pm_avg
-        #
-        #     pa_avg = np.mean(pa[mp_coordinates])
-        #     pa[mp_coordinates] = pa_avg
-
-        # Visualize motion segmentation
-        fg_mask = pm < config['t_motion']
-        visualize_motion_segmentation(fg_mask, config, img_1)
-
-        # Prints performance information
-        elapsed_time = time.time() - start
-        fps.append(1 / elapsed_time)
-        if debug:
-            print(f'FPS: {fps[-1]:.1f}\nFPS Avg: {np.mean(fps):.1f}\n')
-
-        if cv2.waitKey(0) == ord('q'):
-            cv2.destroyAllWindows()
-            sys.exit(0)
+    return bg_mask

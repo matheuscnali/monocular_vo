@@ -1,0 +1,3 @@
+# ninja log v5
+0	13003	1604013455740923572	/home/az/Documents/TCC/RAFT/alt_cuda_corr/build/temp.linux-x86_64-3.8/correlation.o	536cf53d39452da2
+1	48494	1604022181444822725	/home/az/Documents/TCC/RAFT/alt_cuda_corr/build/temp.linux-x86_64-3.8/correlation_kernel.o	456d2f88e5676b74

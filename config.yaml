@@ -58,7 +58,7 @@ visual_odometry:
     max_keypoints: -1
 
 motion_detection:
-  t_motion: 0.9      # The outlier removal threshold probability for iterative BG motion approximation
+  t_motion: 0.6      # The outlier removal threshold probability for iterative BG motion approximation
   epsilon: 0.1       # Minimum error between iterations to stop iterative BG approximation process
   resize_scale: 1
   t_color: 3

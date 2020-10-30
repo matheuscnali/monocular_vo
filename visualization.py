@@ -5,11 +5,14 @@ import matplotlib.pyplot as plt
 import time
 
 
-def update_visualization(frame, figure, ax, lines, trajectory_data, mask):
+def update_visualization(frame, figure, ax, lines, trajectory_data, mask, i):
 
     # Features
-    for (u, v) in trajectory_data['features']:
+    for (u, v) in trajectory_data['static_features']:
         cv2.circle(frame, (u, v), 3, (0, 200, 0))
+
+    for (u, v) in trajectory_data['dynamic_features']:
+        cv2.circle(frame, (u, v), 3, (0, 0, 200))
 
     # Trajectory
     ## Update data (with the new and the old points)
@@ -33,18 +36,22 @@ def update_visualization(frame, figure, ax, lines, trajectory_data, mask):
     figure.canvas.flush_events()
 
     # Draw motion detection
-    img_motion_segmentation = frame
-    overlay = img_motion_segmentation.copy()
+    # img_motion_segmentation = frame
+    # overlay = img_motion_segmentation.copy()
 
-    for y, row in enumerate(mask):
-        for x, is_outlier in enumerate(row):
-            if is_outlier:
-                cv2.circle(overlay, (x, y), 1, (0, 0, 255), -1)
+    # for y, row in enumerate(mask):
+    #     for x, is_static_pixel in enumerate(row):
+    #         if is_static_pixel:
+    #             cv2.circle(overlay, (x, y), 1, (0, 0, 255), -1)
+    #
+    # # Add transparency to red circles
+    # alpha = 0.3
+    # img_motion_segmentation = cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0)
+    # cv2.imshow("Motion segmentation", img_motion_segmentation)
 
-    # Add transparency to red circles
-    alpha = 0.3
-    img_motion_segmentation = cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0)
-    cv2.imshow("Motion segmentation", img_motion_segmentation)
+    cv2.imshow('Visual Odometry Motion Detection', frame)
+    img_path = f'results/motion_detection_{i}.png'
+    cv2.imwrite(img_path, frame)
 
 def visualization_setup():
 
