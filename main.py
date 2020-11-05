@@ -156,9 +156,9 @@ def main():
             cur_T = cur_T + cur_R.dot(T)
             cur_R = R.dot(cur_R)
 
-        trajectory_data['vo_x_list'].append(vo_x)
-        trajectory_data['vo_z_list'].append(vo_z)
-        update_visualization(reference['frame0'], figure, ax, lines, trajectory_data, mask, i)
+        #trajectory_data['vo_x_list'].append(vo_x)
+        #trajectory_data['vo_z_list'].append(vo_z)
+        #update_visualization(reference['frame0'], figure, ax, lines, trajectory_data, mask, i)
         i += 1
 
         reference = {k + '0': current[k + '1'] for k in keys}

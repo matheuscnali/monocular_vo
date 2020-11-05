@@ -32,7 +32,7 @@ def initialize_vo(image_getter, config):
     matching = Matching(config).eval().to(config['device'])
     keys = ['keypoints', 'scores', 'descriptors']
 
-    first_frame = get_frame(image_getter)
+    first_frame = next(image_getter)
     config['height'], config['width'] = int(first_frame.shape[0] * config['motion_detection']['resize_scale']), int(first_frame.shape[1] * config['motion_detection']['resize_scale'])
 
     first_frame = cv2.resize(first_frame, (config['width'], config['height']), interpolation=cv2.INTER_AREA)
